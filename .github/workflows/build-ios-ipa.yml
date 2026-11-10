@@ -1,5 +1,5 @@
 
-name: Build HGhub iOS
+name: Build HGhub iOS Unsigned IPA
 
 on:
   workflow_dispatch:
@@ -8,9 +8,10 @@ permissions:
   contents: read
 
 jobs:
-  ios-build:
-    name: iOS ARM64 Build Test
+  build-ios:
+    name: Build iPhone ARM64 IPA
     runs-on: macos-15
+    timeout-minutes: 90
 
     env:
       CI: "true"
@@ -35,45 +36,92 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           key: ios-arm64
 
-      - name: Check Xcode environment
+      - name: Check Xcode
         run: |
           xcodebuild -version
           xcode-select -p
           rustc --version
 
-      - name: Install iOS build tools
+      - name: Install build tools
         run: |
-          brew install xcodegen cocoapods
+          if ! command -v xcodegen >/dev/null; then
+            brew install xcodegen
+          fi
+          if ! command -v pod >/dev/null; then
+            brew install cocoapods
+          fi
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Check Tauri CLI version
+        shell: bash
+        run: |
+          pnpm exec tauri --version
+          pnpm exec tauri ios build --help |
+            grep -q -- "--no-sign" || {
+              echo "Tauri CLI needs iOS --no-sign support."
+              exit 1
+            }
+          pnpm exec tauri ios build --help |
+            grep -q -- "--archive-only" || {
+              echo "Tauri CLI needs --archive-only support."
+              exit 1
+            }
+
       - name: Initialize iOS project
-        run: pnpm tauri ios init --ci
+        run: pnpm exec tauri ios init --ci
 
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Check Rust iOS ARM64
+      - name: Build unsigned iOS archive
         run: |
-          cargo check \
-            --manifest-path src-tauri/Cargo.toml \
-            --target aarch64-apple-ios
+          pnpm exec tauri ios build \
+            --ci \
+            --no-sign \
+            --archive-only
 
-      - name: Show generated iOS files
+      - name: Package unsigned IPA
+        shell: bash
         run: |
-          find src-tauri/gen/apple \
-            -maxdepth 3 -type f | head -80
+          set -euo pipefail
 
-      - name: Upload generated iOS project
+          APP_PATH=$(find src-tauri/gen/apple/build \
+            -type d -path "*/Products/Applications/*.app" \
+            -print -quit)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No iOS .app found in archive."
+            find src-tauri/gen/apple/build -maxdepth 5 \
+              -print || true
+            exit 1
+          fi
+
+          echo "Found app: $APP_PATH"
+
+          APP_NAME=$(basename "$APP_PATH")
+          mkdir -p ipa-output/Payload
+
+          cp -R "$APP_PATH" "ipa-output/Payload/$APP_NAME"
+
+          (
+            cd ipa-output
+            zip -qry HGhub-iOS-unsigned.ipa Payload
+          )
+
+          test -s ipa-output/HGhub-iOS-unsigned.ipa
+
+          unzip -l ipa-output/HGhub-iOS-unsigned.ipa |
+            head -30
+
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: HGhub-iOS-Project
-          path: src-tauri/gen/apple/
+          name: HGhub-iOS-Unsigned
+          path: ipa-output/HGhub-iOS-unsigned.ipa
           if-no-files-found: error
+          retention-days: 14
