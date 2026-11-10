@@ -1,0 +1,79 @@
+
+name: Build HGhub iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-build:
+    name: iOS ARM64 Build Test
+    runs-on: macos-15
+
+    env:
+      CI: "true"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios-arm64
+
+      - name: Check Xcode environment
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          rustc --version
+
+      - name: Install iOS build tools
+        run: |
+          brew install xcodegen cocoapods
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Initialize iOS project
+        run: pnpm tauri ios init --ci
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Check Rust iOS ARM64
+        run: |
+          cargo check \
+            --manifest-path src-tauri/Cargo.toml \
+            --target aarch64-apple-ios
+
+      - name: Show generated iOS files
+        run: |
+          find src-tauri/gen/apple \
+            -maxdepth 3 -type f | head -80
+
+      - name: Upload generated iOS project
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iOS-Project
+          path: src-tauri/gen/apple/
+          if-no-files-found: error
