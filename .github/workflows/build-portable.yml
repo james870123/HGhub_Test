@@ -31,7 +31,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build Portable EXE
         run: pnpm exec tauri build --no-bundle
