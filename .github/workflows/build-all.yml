@@ -1,0 +1,219 @@
+
+name: Build HGhub Windows + iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ========================================
+  # Windows Portable EXE
+  # ========================================
+  windows:
+    name: Windows Portable EXE
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Read application version
+        shell: pwsh
+        run: |
+          $conf = Get-Content `
+            "src-tauri/tauri.conf.json" -Raw |
+            ConvertFrom-Json
+
+          $version = $conf.version
+
+          if (-not $version) {
+            throw "Missing Tauri version"
+          }
+
+          "APP_VERSION=$version" |
+            Out-File -FilePath $env:GITHUB_ENV `
+              -Append -Encoding utf8
+
+          Write-Host "HGhub version: $version"
+
+      - name: Build Windows Portable
+        run: pnpm exec tauri build --no-bundle
+
+      - name: Prepare Windows EXE
+        shell: pwsh
+        run: |
+          $source = "src-tauri/target/release/huangguo-client.exe"
+
+          if (-not (Test-Path $source)) {
+            throw "Windows EXE not found: $source"
+          }
+
+          New-Item -ItemType Directory `
+            -Force "output" | Out-Null
+
+          $filename = "HGhub-Windows-v$env:APP_VERSION.exe"
+
+          Copy-Item $source "output/$filename"
+
+          Get-Item "output/$filename" |
+            Select-Object Name, Length
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-Windows-v${{ env.APP_VERSION }}
+          path: output/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload resolved pnpm lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-pnpm-lockfile
+          path: pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 7
+
+  # ========================================
+  # iOS Unsigned IPA for Sideloadly
+  # ========================================
+  ios:
+    name: iOS ARM64 Unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    env:
+      CI: "true"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios-arm64
+
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          xcode-select -p
+          rustc --version
+
+      - name: Install iOS tools
+        run: |
+          if ! command -v xcodegen >/dev/null; then
+            brew install xcodegen
+          fi
+
+          if ! command -v pod >/dev/null; then
+            brew install cocoapods
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Read application version
+        shell: bash
+        run: |
+          VERSION=$(node -p \
+            "require('./src-tauri/tauri.conf.json').version")
+
+          if [ -z "$VERSION" ] || \
+             [ "$VERSION" = "undefined" ]; then
+            echo "Missing Tauri version"
+            exit 1
+          fi
+
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          echo "HGhub version: $VERSION"
+
+      - name: Initialize iOS project
+        run: pnpm exec tauri ios init --ci
+
+      - name: Build unsigned iOS archive
+        run: |
+          pnpm exec tauri ios build \
+            --ci \
+            --no-sign \
+            --archive-only
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH=$(find src-tauri/gen/apple/build \
+            -type d \
+            -path "*/Products/Applications/*.app" \
+            -print -quit)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "iOS .app not found"
+            exit 1
+          fi
+
+          mkdir -p ipa-work/Payload
+          mkdir -p output
+
+          cp -R "$APP_PATH" ipa-work/Payload/
+
+          IPA_NAME="HGhub-iOS-v${APP_VERSION}-unsigned.ipa"
+
+          (
+            cd ipa-work
+            zip -qry "../output/$IPA_NAME" Payload
+          )
+
+          test -s "output/$IPA_NAME"
+
+          echo "Created: $IPA_NAME"
+          ls -lh "output/$IPA_NAME"
+
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iOS-v${{ env.APP_VERSION }}-Unsigned
+          path: output/*.ipa
+          if-no-files-found: error
+          retention-days: 30
