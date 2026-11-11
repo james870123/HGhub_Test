@@ -37,7 +37,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Read application version
         shell: pwsh
@@ -150,7 +150,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Read application version
         shell: bash
